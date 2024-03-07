@@ -1,0 +1,668 @@
+---
+title: "Chloropleth Maps to beautifully visualize Mortality trends"
+author: "William Swain, MD"
+date: "2024-03-05"
+output:
+  html_document:
+    theme: journal
+  word_document: default
+  pdf_document: default
+---
+The goal here is to put a heatmap on an actual map. This is called a chloropleth map. It can show visually appealing data per state.
+
+The data for this comes National Vital Statistics System (CDC) on cardiovascular mortality. We will look at a subset of this data - mortality from myocardial infarctions. This database is stratified by state which sounds like a pretty good starting point for a chloropleth map.
+
+The data file is linked [here on the CDC website](https://data.cdc.gov/Heart-Disease-Stroke-Prevention/National-Vital-Statistics-System-NVSS-National-Car/kztq-p2jf/about_da).
+
+For a background map to fill, we will use a built-in package called maps.
+
+I want to look at the percent change of myocardial infarctions death rates from 2016-2020 to get a sense of the last 5 years of available data.
+
+### Part 1: Getting the data, calculating the average
+
+While we pull in the whole spreadsheet, we filter out a lot with subset() to remove other causes of mortality, keep the "overall" stats and remove subgroups, remove non-50 states, etc. This gives breathing room in the size of the data frame. We could always make more subset()'s to make the programming easy, but I want to give myself flexibility to make quick changes.
+
+Start by making the environment.
+``` {r readfile, echo=FALSE, message=FALSE, warning=FALSE}
+# Clean work space
+rm(list=ls(all=T))
+options(stringAsFactors = F)
+options("scipen" = 100, "digits" = 4)
+setwd("/Users/M276066/Documents/R projects/NationalVitalStatistics/")
+nvs <- read.csv("NVSS__-_National_Cardiovascular_Disease_Surveillance_Data_20240301.csv", na.strings = c("", "NA"))
+setwd("/Users/M276066/Documents/R projects/NationalVitalStatistics/")
+library(ggplot2)
+library(descr)
+library(RColorBrewer)
+library(plotly)
+library(ggmap)
+library(maps)
+library(mapproj)
+library(dplyr)
+library(ggpubr)
+```
+
+And then grabbing the subset we want.
+
+```{r makesubset}
+ami <- subset(nvs, subset = nvs$Topic == "Acute Myocardial Infarction (Heart Attack)")
+amipctchange <- subset(ami,
+                       subset = ami$Data_Value_Type == "Age-Standardized" &
+                       ami$Break_Out == "Overall" &
+                       ami$LocationDesc != "Washington, DC" &
+                       ami$LocationDesc != "United States"
+                      )
+```
+
+Here is what I got: all 50 states in alphabetical order for 2000, then again for 2001, and 2002, through 2020.
+
+Lastly, we set-up the matrix for our final data that we need to plot to a map.
+
+```{r changematrix}
+# Map 1: The change in AMI mortality from 2016-2020 by state (age adjusted)
+  pctchangematrix <- matrix(0,50,2)
+  pctchangematrix[,1] <- tolower(amipctchange$LocationDesc[1:50])
+```
+  
+From the CVD dataset we take the names of the first 50 states in lowercase. Making them lowercase will help us later.
+
+### Part 2: Calculating the percent change
+
+The second column of pctchangematrix - the percent change of AMI mortality by state from 2016-2020 - will be filled by a loop. 
+
+The way our data is structured If I want to move up a year I need to go down 50 rows. See this with the two vectors below: 
+
+```{r}
+move50rowsdown <- seq(0, 1000, 50)
+year <- 2000:2020
+move50rowsdown
+year
+
+```
+Since I want to grab data starting in 2016 - I add 800 to my row position. We also want the number from 2020, and we select that with 1000.
+
+I mention this because depending how much you subset() your data, how you want to iterate through it document can change.
+
+```  {r forloop}
+  tempnuminitial = 0
+  tempnumfinal = 0
+  # Loop - averaging each row + 50 + 100, + 150... 1000 (50 states, alphabetical order)
+  for (i in 1:50) {
+    tempnuminitial <- amipctchange[(i + 800),15] # add 800 to start at year 2016
+    tempnumfinal <- amipctchange[(i + 1000),15] # Add 1000 to start at year 2020
+    pctchangematrix[i,2] <- (tempnumfinal-tempnuminitial)/tempnuminitial *100
+    # Reset these numbers for the next iteration of i
+    tempnuminitial = 0
+    tempnumfinal = 0
+  }
+str(pctchangematrix)
+```
+
+We make tempnumfinal, and tempnuminitial as temporary numbers to store and create the value we want to output (the percent change in myocardial infarction mortality rates). As the loop finishes the temporary numbers reset back to zero, and i advances.
+
+We calculate the delta - (recent - old) / old - and multiply by 100. We have the state-level information we need to put on a map. Now we need to get that map.
+
+```  {r}
+str(pctchangematrix)
+```
+
+This is our dataset to fill the colors of a map. Now we need a map
+
+### Part 3: Getting the map + attaching our data to it
+
+```  {r}
+  states_map <- map_data("state")
+  str(states_map)
+```  
+
+We are using coordinates from this map file to draw a "polygon" of the United States. map_data has a set of coordinates that, when connected in the correct order, make a shape to use in ggplot.
+
+```{r}
+amichangemap <- merge(states_map, 
+                      pctchangematrix, 
+                      by.x = "region", 
+                      by.y = "V1"
+                      )
+```
+
+We attach our data, the percent mortality change from 2016-2020 with merge(), that combines the data based on the "same" columns in each dataset. The matching column that "merges" the two is the state list in lowercase alphabetical order. That is "region" in the map database and "V1" (unlabeled) in my chart.
+
+We have now put our percent-change values in the mapping coordinates. The value for "michigan" is now inserted into every row of states_map that is mapping a coordinate for Michigan. 
+
+Lastly, we resort the code so its ordered by state (group) and then by the correct coordinate to coordinate (order).
+```{r}
+amichangemap <- arrange(amichangemap, group, order)
+```
+
+### Part 4: Making the plot
+
+``` {r}
+p1 <- ggplot(amichangemap, aes(long, lat, group = group, fill = as.numeric(V2))) +
+    geom_polygon(colour = "black") +
+    coord_map() +
+    labs(title = "Percent change of age-adjusted AMI Mortality 2016-2020") +
+    scale_fill_gradient2(name = "% change",
+                         low = "darkgreen", 
+                         mid = "white", 
+                         high = "red",
+                         na.value = "gray80",
+                         midpoint = 0,
+                         breaks = c(-50, -25, 0, 25, 50),
+                         limits = c(-50, 50)
+    ) +
+    theme_bw() +
+    theme(title = element_text(size = 12, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.title.y = element_blank(),
+          axis.text.y = element_blank(),
+          legend.text = element_text(size = 12, 
+                                     hjust = 0,
+                                     vjust = 0.5)
+          )
+
+``` 
+
+We map longitude and latitude from the the map data, and our calculated value based on fill = as.numeric((V2)). V2 is the nameless column 2 that contains our values we calculated. This shades the states based on our number.
+
+A coord_map() is created and connected in by geom_polygon(). All we did was calculate a number and overlay it on the map.
+
+```{r}
+p1
+```
+
+I made a custom scale_fill_gradient2 from -50% (mortality decrease, good, green) to +50% (mortality increase, bad, red). As you will see later there is data that was not available (na).
+
+### Discussion
+
+The nice thing about the NVSS is that you can stratify based on pre-specified groups. In our earlier subset(), we would select these sets instead of "overall."
+
+```{r sex, echo=FALSE}
+ami <- subset(nvs, subset = nvs$Topic == "Acute Myocardial Infarction (Heart Attack)")
+    amipctchange <- ami
+    amipctchange <- subset(amipctchange, subset = ami$Data_Value_Type == "Age-Standardized" &
+                             ami$Break_Out == "Female" &
+                             ami$LocationDesc != "Washington, DC" &
+                             ami$LocationDesc != "United States"
+    )
+    pctchangematrix <- matrix(0,50,2)
+    pctchangematrix[,1] <- tolower(amipctchange$LocationDesc[1:50])
+    tempnum = 0
+    tempnuminitial = 0
+    tempnumfinal = 0
+    # Loop - averaging each row + 50 + 100, + 150... 1000 (50 states, alphabetical order)
+    for (i in 1:50) {
+      tempnuminitial <- amipctchange[(i + 800),15] # add 500 to start at year 2011
+      tempnumfinal <- amipctchange[(i + 1000),15] # Add 1000 to start at year 2020
+      pctchangematrix[i,2] <- (tempnumfinal - tempnuminitial) / tempnuminitial *100
+      tempnum = 0 # reset tempnum for the next iteration of i
+      tempnuminitial = 0
+      tempnumfinal = 0
+    }
+    states_map <- map_data("state")
+    amichangemap <- merge(states_map, pctchangematrix, by.x = "region", by.y = "V1")
+    amichangemap <- arrange(amichangemap, group, order)
+p2  <- ggplot(amichangemap, aes(long, lat, group = group, fill = as.numeric(V2))) +
+      geom_polygon(colour = "black") +
+      coord_map() +
+      labs(title = "Women") +
+      scale_fill_gradient2(name = "% change",
+                           low = "darkgreen", 
+                           mid = "white", 
+                           high = "red", 
+                           midpoint = 0,
+                           breaks = c(-50, -25, 0, 25, 50),
+                           limits = c(-50, 50)
+      ) +
+      theme_bw() + 
+      theme(plot.title = element_text(size = 14),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            legend.text = element_text(size = 12),
+            legend.title = element_text(size = 12, vjust = 1),
+            legend.key.size = unit(1.5, "cm"))
+ami <- subset(nvs, subset = nvs$Topic == "Acute Myocardial Infarction (Heart Attack)")
+    amipctchange <- subset(ami, subset = ami$Data_Value_Type == "Age-Standardized" &
+                             ami$Break_Out == "Male" &
+                             ami$LocationDesc != "Washington, DC" &
+                             ami$LocationDesc != "United States"
+    )
+    pctchangematrix <- matrix(0,50,2)
+    pctchangematrix[,1] <- tolower(amipctchange$LocationDesc[1:50])
+    countvector <- seq(0,1000,50)
+    tempnum = 0
+    tempnuminitial = 0
+    tempnumfinal = 0
+    # Loop - averaging each row + 50 + 100, + 150... 1000 (50 states, alphabetical order)
+    for (i in 1:50) {
+      tempnuminitial <- amipctchange[(i + 800),15] # add 500 to start at year 2011
+      tempnumfinal <- amipctchange[(i + 1000),15] # Add 1000 to start at year 2020
+      pctchangematrix[i,2] <- (tempnumfinal - tempnuminitial) / tempnuminitial *100
+      tempnum = 0 # reset tempnum for the next iteration of i
+      tempnuminitial = 0
+      tempnumfinal = 0
+    }
+    states_map <- map_data("state")
+    amichangemap <- merge(states_map, pctchangematrix, by.x = "region", by.y = "V1")
+    amichangemap <- arrange(amichangemap, group, order)
+    p3  <- ggplot(amichangemap, aes(long, lat, group = group, fill = as.numeric(V2))) +
+      geom_polygon(colour = "black") +
+      coord_map() +
+      labs(title = "Men") +
+      scale_fill_gradient2(name = "% change",
+                           low = "darkgreen", 
+                           mid = "white", 
+                           high = "red", 
+                           midpoint = 0,
+                           breaks = c(-50, -25, 0, 25, 50),
+                           limits = c(-50, 50)
+      ) +
+      theme_bw() + 
+      theme(plot.title = element_text(size = 14),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            legend.text = element_text(size = 12),
+            legend.title = element_text(size = 12, vjust = 1),
+            legend.key.size = unit(1.5, "cm"))
+
+plot <- ggarrange(p2, p3, ncol = 1,common.legend = TRUE, legend = "right", labels = "auto")
+annotate_figure(plot, 
+                    top = text_grob("Percent change of age-adjusted AMI Mortality 2016-2020", 
+                                    face = "bold", size = 16))
+```
+                                    
+As you can see there are not many major difference between men and women. Some subtle things in some states. But pretty even.
+
+```{r ageranges, echo=FALSE}
+ami <- subset(nvs, subset = nvs$Topic == "Acute Myocardial Infarction (Heart Attack)")
+    amipctchange <- subset(ami, subset = ami$Data_Value_Type == "Crude" &
+                             ami$Break_Out == "25-44" &
+                             ami$LocationDesc != "Washington, DC" &
+                             ami$LocationDesc != "United States"
+    )
+    pctchangematrix <- matrix(0,50,2)
+    pctchangematrix[,1] <- tolower(amipctchange$LocationDesc[1:50])
+    countvector <- seq(0,1000,50)
+    tempnum = 0
+    tempnuminitial = 0
+    tempnumfinal = 0
+    # Loop - averaging each row + 50 + 100, + 150... 1000 (50 states, alphabetical order)
+    for (i in 1:50) {
+      tempnuminitial <- amipctchange[(i + 800),15] # add 500 to start at year 2011
+      tempnumfinal <- amipctchange[(i + 1000),15] # Add 1000 to start at year 2020
+      pctchangematrix[i,2] <- (tempnumfinal - tempnuminitial) / tempnuminitial *100
+      tempnum = 0 # reset tempnum for the next iteration of i
+      tempnuminitial = 0
+      tempnumfinal = 0
+    }
+    states_map <- map_data("state")
+    amichangemap <- merge(states_map, pctchangematrix, by.x = "region", by.y = "V1")
+    amichangemap <- arrange(amichangemap, group, order)
+ p1  <- ggplot(amichangemap, aes(long, lat, group = group, fill = as.numeric(V2))) +
+      geom_polygon(colour = "black") +
+      coord_map() +
+      labs(title = "Ages 25-44") +
+      scale_fill_gradient2(name = "% change",
+                           low = "darkgreen", 
+                           mid = "white", 
+                           high = "red", 
+                           midpoint = 0,
+                           na.value = "gray80",
+                           breaks = c(-50, -25, 0, 25, 50),
+                           limits = c(-50, 50)
+      ) +
+      theme_bw() + 
+      theme(plot.title = element_text(size = 14),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            legend.text = element_text(size = 12),
+            legend.title = element_text(size = 12, vjust = 1),
+            legend.key.size = unit(1.5, "cm"))
+ami <- subset(nvs, subset = nvs$Topic == "Acute Myocardial Infarction (Heart Attack)")
+    amipctchange <- subset(ami, subset = ami$Data_Value_Type == "Crude" &
+                             ami$Break_Out == "45-64" &
+                             ami$LocationDesc != "Washington, DC" &
+                             ami$LocationDesc != "United States"
+    )
+    pctchangematrix <- matrix(0,50,2)
+    pctchangematrix[,1] <- tolower(amipctchange$LocationDesc[1:50])
+    countvector <- seq(0,1000,50)
+    tempnum = 0
+    tempnuminitial = 0
+    tempnumfinal = 0
+    # Loop - averaging each row + 50 + 100, + 150... 1000 (50 states, alphabetical order)
+    for (i in 1:50) {
+      tempnuminitial <- amipctchange[(i + 800),15] # add 500 to start at year 2011
+      tempnumfinal <- amipctchange[(i + 1000),15] # Add 1000 to start at year 2020
+      pctchangematrix[i,2] <- (tempnumfinal - tempnuminitial) / tempnuminitial *100
+      tempnum = 0 # reset tempnum for the next iteration of i
+      tempnuminitial = 0
+      tempnumfinal = 0
+    }
+    states_map <- map_data("state")
+    amichangemap <- merge(states_map, pctchangematrix, by.x = "region", by.y = "V1")
+    amichangemap <- arrange(amichangemap, group, order)
+ p2  <- ggplot(amichangemap, aes(long, lat, group = group, fill = as.numeric(V2))) +
+      geom_polygon(colour = "black") +
+      coord_map() +
+      labs(title = "Ages 45-64") +
+      scale_fill_gradient2(name = "% change",
+                           low = "darkgreen", 
+                           mid = "white", 
+                           high = "red",
+                           na.value = "gray80",
+                           midpoint = 0,
+                           breaks = c(-50, -25, 0, 25, 50),
+                           limits = c(-50, 50)
+      ) +
+      theme_bw() + 
+      theme(plot.title = element_text(size = 14),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            legend.text = element_text(size = 12),
+            legend.title = element_text(size = 12, vjust = 1),
+            legend.key.size = unit(1.5, "cm"))
+ami <- subset(nvs, subset = nvs$Topic == "Acute Myocardial Infarction (Heart Attack)")
+    amipctchange <- subset(ami, subset = ami$Data_Value_Type == "Crude" &
+                             ami$Break_Out == "65+" &
+                             ami$LocationDesc != "Washington, DC" &
+                             ami$LocationDesc != "United States"
+    )
+    pctchangematrix <- matrix(0,50,2)
+    pctchangematrix[,1] <- tolower(amipctchange$LocationDesc[1:50])
+    countvector <- seq(0,1000,50)
+    tempnum = 0
+    tempnuminitial = 0
+    tempnumfinal = 0
+    # Loop - averaging each row + 50 + 100, + 150... 1000 (50 states, alphabetical order)
+    for (i in 1:50) {
+      tempnuminitial <- amipctchange[(i + 800),15] # add 500 to start at year 2011
+      tempnumfinal <- amipctchange[(i + 1000),15] # Add 1000 to start at year 2020
+      pctchangematrix[i,2] <- (tempnumfinal - tempnuminitial) / tempnuminitial *100
+      tempnum = 0 # reset tempnum for the next iteration of i
+      tempnuminitial = 0
+      tempnumfinal = 0
+    }
+    states_map <- map_data("state")
+    amichangemap <- merge(states_map, pctchangematrix, by.x = "region", by.y = "V1")
+    amichangemap <- arrange(amichangemap, group, order)
+    p3  <- ggplot(amichangemap, aes(long, lat, group = group, fill = as.numeric(V2))) +
+      geom_polygon(colour = "black") +
+      coord_map() +
+      labs(title = "Ages 65+") +
+      scale_fill_gradient2(name = "% change",
+                           low = "darkgreen", 
+                           mid = "white", 
+                           high = "red",
+                           na.value = "gray80",
+                           midpoint = 0,
+                           breaks = c(-50, -25, 0, 25, 50),
+                           limits = c(-50, 50)
+      ) +
+      theme_bw() + 
+      theme(plot.title = element_text(size = 14),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            legend.text = element_text(size = 12),
+            legend.title = element_text(size = 12, vjust = 1),
+            legend.key.size = unit(1.5, "cm"))
+```
+
+The full R Markdown file has the code for these maps. Essentially, I build them all separately (press control + enter a lot), and graph them together. We show how in the next example where we look at the three age groups that the dataset has: (25-44, 45-64, 65+) which are made as p1, p2, and p3. In this file, we are are getting these splits by selecting them in subset(), and not choosing "overall." Double check the looping math (although here it is fine here as we made a 1:1 substitution).
+
+```{r, echo = TRUE}    
+plot <- ggarrange(p1, p2, p3, 
+                  ncol = 1, common.legend = TRUE, 
+                  legend = "right", labels = "auto")
+    annotate_figure(plot, 
+                    top = text_grob("Percent change in AMI Mortality from 2016-2020", 
+                                    face = "bold", size = 12 ))
+```
+
+Gray represents "NA." All of these data are essentially an estimate - the numbers are so low that one cannot be 95% confident that the true value is above 0 (i.e. the CI crosses zero). 
+
+The older people tend to have improving AMI mortality rates while it is worsening for younger. I wonder why - because younger patients may be more atypical upon presentation? Have rarer diseases that cause "Myocardial Infarction?"
+
+The downside of these estimations (and not having the money to buy individual state data) is that we don't know what is happening in the gray areas. That's a shame, because actual numbers would be shaded automatically by this program. To be sure, the amount of AMI mortality in the gray area is proportionally small compared to more populous states. Improving things for the most people is great. But I wonder about the individual patients in these gray spots.
+
+Lastly, we'll look by race. Unfortunately, this database really only has White, Black, Hispanic, and Other.
+
+```{r race, echo=FALSE}
+ami <- subset(nvs, subset = nvs$Topic == "Acute Myocardial Infarction (Heart Attack)")
+    amipctchange <- subset(ami, subset = ami$Data_Value_Type == "Age-Standardized" &
+                             ami$Break_Out == "Non-Hispanic White" &
+                             ami$LocationDesc != "Washington, DC" &
+                             ami$LocationDesc != "United States"
+    )
+    pctchangematrix <- matrix(0,50,2)
+    pctchangematrix[,1] <- tolower(amipctchange$LocationDesc[1:50])
+    countvector <- seq(0,1000,50)
+    tempnum = 0
+    tempnuminitial = 0
+    tempnumfinal = 0
+    # Loop - averaging each row + 50 + 100, + 150... 1000 (50 states, alphabetical order)
+    for (i in 1:50) {
+      tempnuminitial <- amipctchange[(i + 800),15] # add 500 to start at year 2011
+      tempnumfinal <- amipctchange[(i + 1000),15] # Add 1000 to start at year 2020
+      pctchangematrix[i,2] <- (tempnumfinal - tempnuminitial) / tempnuminitial *100
+      tempnum = 0 # reset tempnum for the next iteration of i
+      tempnuminitial = 0
+      tempnumfinal = 0
+    }
+    states_map <- map_data("state")
+    amichangemap <- merge(states_map, pctchangematrix, by.x = "region", by.y = "V1")
+    amichangemap <- arrange(amichangemap, group, order)
+
+    p1  <- ggplot(amichangemap, aes(long, lat, group = group, fill = as.numeric(V2))) +
+      geom_polygon(colour = "black") +
+      coord_map() +
+      labs(title = "White") +
+      scale_fill_gradient2(name = "% change",
+                           low = "darkgreen", 
+                           mid = "white", 
+                           high = "red", 
+                           midpoint = 0,
+                           na.value = "gray80",
+                           breaks = c(-50, -25, 0, 25, 50),
+                           limits = c(-50, 50)
+      ) +
+      theme_bw() + 
+      theme(plot.title = element_text(size = 14),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            legend.text = element_text(size = 12),
+            legend.title = element_text(size = 12, vjust = 1),
+            legend.key.size = unit(1.5, "cm"))
+
+    
+    # step two - Black
+    ami <- subset(nvs, subset = nvs$Topic == "Acute Myocardial Infarction (Heart Attack)")
+    amipctchange <- subset(ami, subset = ami$Data_Value_Type == "Age-Standardized" &
+                             ami$Break_Out == "Non-Hispanic Black" &
+                             ami$LocationDesc != "Washington, DC" &
+                             ami$LocationDesc != "United States"
+    )
+    pctchangematrix <- matrix(0,50,2)
+    pctchangematrix[,1] <- tolower(amipctchange$LocationDesc[1:50])
+    countvector <- seq(0,1000,50)
+    tempnum = 0
+    tempnuminitial = 0
+    tempnumfinal = 0
+    # Loop - averaging each row + 50 + 100, + 150... 1000 (50 states, alphabetical order)
+    for (i in 1:50) {
+      tempnuminitial <- amipctchange[(i + 800),15] # add 500 to start at year 2011
+      tempnumfinal <- amipctchange[(i + 1000),15] # Add 1000 to start at year 2020
+      pctchangematrix[i,2] <- (tempnumfinal - tempnuminitial) / tempnuminitial *100
+      tempnum = 0 # reset tempnum for the next iteration of i
+      tempnuminitial = 0
+      tempnumfinal = 0
+    }
+    states_map <- map_data("state")
+    amichangemap <- merge(states_map, pctchangematrix, by.x = "region", by.y = "V1")
+    amichangemap <- arrange(amichangemap, group, order)
+    p2  <- ggplot(amichangemap, aes(long, lat, group = group, fill = as.numeric(V2))) +
+      geom_polygon(colour = "black") +
+      coord_map() +
+      labs(title = "Black") +
+      scale_fill_gradient2(name = "% change",
+                           low = "darkgreen", 
+                           mid = "white", 
+                           high = "red",
+                           na.value = "gray80",
+                           midpoint = 0,
+                           breaks = c(-50, -25, 0, 25, 50),
+                           limits = c(-50, 50)
+      ) +
+      theme_bw() + 
+      theme(plot.title = element_text(size = 14),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            legend.text = element_text(size = 12),
+            legend.title = element_text(size = 12, vjust = 1),
+            legend.key.size = unit(1.5, "cm"))
+
+    
+    # step three - Hispanic
+    ami <- subset(nvs, subset = nvs$Topic == "Acute Myocardial Infarction (Heart Attack)")
+    amipctchange <- subset(ami, subset = ami$Data_Value_Type == "Age-Standardized" &
+                             ami$Break_Out == "Hispanic" &
+                             ami$LocationDesc != "Washington, DC" &
+                             ami$LocationDesc != "United States"
+    )
+    pctchangematrix <- matrix(0,50,2)
+    pctchangematrix[,1] <- tolower(amipctchange$LocationDesc[1:50])
+    countvector <- seq(0,1000,50)
+    tempnum = 0
+    tempnuminitial = 0
+    tempnumfinal = 0
+    # Loop - averaging each row + 50 + 100, + 150... 1000 (50 states, alphabetical order)
+    for (i in 1:50) {
+      tempnuminitial <- amipctchange[(i + 800),15] # add 500 to start at year 2011
+      tempnumfinal <- amipctchange[(i + 1000),15] # Add 1000 to start at year 2020
+      pctchangematrix[i,2] <- (tempnumfinal - tempnuminitial) / tempnuminitial *100
+      tempnum = 0 # reset tempnum for the next iteration of i
+      tempnuminitial = 0
+      tempnumfinal = 0
+    }
+    states_map <- map_data("state")
+    amichangemap <- merge(states_map, pctchangematrix, by.x = "region", by.y = "V1")
+    amichangemap <- arrange(amichangemap, group, order)
+
+    p3  <- ggplot(amichangemap, aes(long, lat, group = group, fill = as.numeric(V2))) +
+      geom_polygon(colour = "black") +
+      coord_map() +
+      labs(title = "Hispanic") +
+      scale_fill_gradient2(name = "% change",
+                           low = "darkgreen", 
+                           mid = "white", 
+                           high = "red",
+                           na.value = "gray80",
+                           midpoint = 0,
+                           breaks = c(-50, -25, 0, 25, 50),
+                           limits = c(-50, 50)
+      ) +
+      theme_bw() + 
+      theme(plot.title = element_text(size = 14),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            legend.text = element_text(size = 12),
+            legend.title = element_text(size = 12, vjust = 1),
+            legend.key.size = unit(1.5, "cm"))
+
+    
+    # Step 4 - other
+    ami <- subset(nvs, subset = nvs$Topic == "Acute Myocardial Infarction (Heart Attack)")
+    amipctchange <- subset(ami, subset = ami$Data_Value_Type == "Age-Standardized" &
+                             ami$Break_Out == "Other" &
+                             ami$LocationDesc != "Washington, DC" &
+                             ami$LocationDesc != "United States"
+    )
+    pctchangematrix <- matrix(0,50,2)
+    pctchangematrix[,1] <- tolower(amipctchange$LocationDesc[1:50])
+    countvector <- seq(0,1000,50)
+    tempnum = 0
+    tempnuminitial = 0
+    tempnumfinal = 0
+    # Loop - averaging each row + 50 + 100, + 150... 1000 (50 states, alphabetical order)
+    for (i in 1:50) {
+      tempnuminitial <- amipctchange[(i + 800),15] # add 500 to start at year 2011
+      tempnumfinal <- amipctchange[(i + 1000),15] # Add 1000 to start at year 2020
+      pctchangematrix[i,2] <- (tempnumfinal - tempnuminitial) / tempnuminitial *100
+      tempnum = 0 # reset tempnum for the next iteration of i
+      tempnuminitial = 0
+      tempnumfinal = 0
+    }
+    states_map <- map_data("state")
+    amichangemap <- merge(states_map, pctchangematrix, by.x = "region", by.y = "V1")
+    amichangemap <- arrange(amichangemap, group, order)
+    p4  <- ggplot(amichangemap, aes(long, lat, group = group, fill = as.numeric(V2))) +
+      geom_polygon(colour = "black") +
+      coord_map() +
+      labs(title = "Other") +
+      scale_fill_gradient2(name = "% change",
+                           low = "darkgreen", 
+                           mid = "white", 
+                           high = "red",
+                           na.value = "gray80",
+                           midpoint = 0,
+                           breaks = c(-50, -25, 0, 25, 50),
+                           limits = c(-50, 50)
+      ) +
+      theme_bw() + 
+      theme(plot.title = element_text(size = 14),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            legend.text = element_text(size = 12),
+            legend.title = element_text(size = 12, vjust = 1),
+            legend.key.size = unit(1.5, "cm"))
+    # ggarrange - look at males vs females comparison last 5 years
+    plot <- ggarrange(p1, p2, p3, p4, ncol = 2, nrow = 2,
+              common.legend = TRUE, legend = "right", labels = "auto")
+    annotate_figure(plot, 
+                    top = text_grob("Percent change in AMI Mortality from 2016-2020", 
+                                    face = "bold", size = 12))
+```
+
+More gray, more small numbers whose "estimates" can't be sure they aren't zero. White people saw a lot of improvement in mortality rates over the 5 years. Non-white racial groups have more red and actually a worsening of mortality rates over the last 5 years. Defining "other" category would be useful as well. Given my own Native background, I want to know what happens to indigenous communities (i.e. 4 corners, Montana/Idaho, Dakotas) - essentially all of the gray areas on the map.
+
+My biggest disappointment with this dataset is that the subgroups are preset. You can compare males to females, but you cannot determine how many males are in a specific age group or race. This is due to how the data is structured and from its methodology for "estimates."
+
+``` {r}
+ami[1:10, c(2, 4, 15, 21, 22)]
+```
+
+If there were an individual level dataset, we could make as many comparisons as we want. We could look at racial differences of MI mortality in elderly men, for example. 
+
+### Food for thought
+
+Heart disease, is the #1 Killer, Here, we show MI mortality is improving overall. How do we improve the delivery of that high quality care to places in the red? Especially to those in rural areas with fewer resources... If I had to bet I'd guess there's more "red" in the "gray"...
+
+### References / resources
+Chang W. 13.18 Creating a Choropleth Map | R Graphics Cookbook, 2nd Edition. Accessed March 5,
+2024. https://r-graphics.org/recipe-miscgraph-choropleth
+
+Holtz Y. Choropleth map with R and ggplot2. Accessed March 5, 2024. https://www.r-graph-gallery.com
+/327-chloropleth-map-from-geojson-with-ggplot2.html
+
+#### Want to collaborate?
+Rmarkdown file is available [here](https://github.com/willhs323).
+
+If you think you have a good idea for a project that would benefit from this analysis reach out on Twitter/X @swain_Will_MD
